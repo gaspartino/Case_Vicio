@@ -5,25 +5,6 @@ import pandas as pd
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer, util
 
-def get_model(model_type):
-    models = {
-        "llm": create_LLM_model,
-        "embedding": create_embedding_model
-    }
-
-    return models[model_type]()
-
-
-def create_LLM_model():
-    return pipeline(
-        "text-generation",
-        model="Qwen/Qwen2.5-3B-Instruct",
-        device_map="auto"
-    )
-
-def create_embedding_model():
-    return SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-
 
 def load_questions(file_path, discipline=None, subject=None):
     questions = []
@@ -110,60 +91,83 @@ def retrieve_candidate_themes(question, classification_themes, model, top_k=5):
 
     return themes.sort_values("similaridade", ascending=False).head(top_k).drop(columns=["texto_busca"]).reset_index(drop=True)
 
+
 def classify_question(question, candidates, llm):
     alternatives = candidates[["tema_id", "titulo", "caminho", "descricao", "similaridade"]].fillna("").to_dict(orient="records")
     question_text = json.dumps(question, ensure_ascii=False)
     candidates_text = json.dumps(alternatives, ensure_ascii=False)
+    prompt = f"""Você é um classificador de questões jurídicas para uma plataforma de estudos.
 
-    prompt = f"""
-      Você é um classificador de questões jurídicas para uma plataforma de estudos.
+Analise a questão e escolha o tema que corresponde ao conteúdo jurídico efetivamente cobrado.
 
-      Analise a questão e os temas candidatos. Escolha um tema somente se ele corresponder ao conteúdo jurídico efetivamente cobrado.
+Regras:
+- Considere o enunciado, o comando e as alternativas.
+- Use disciplina_origem e assunto_origem como pistas, não como verdade absoluta.
+- Considere o título, a descrição e o caminho hierárquico dos temas.
+- Escolha somente um dos IDs candidatos.
+- Use "publicar" somente quando houver forte correspondência temática.
+- Use "revisar" quando houver um candidato plausível, mas persistir dúvida.
+- Use "fora" quando nenhum candidato for adequado.
+- Para "publicar" ou "revisar", informe o tema_id de um candidato.
+- Para "fora", use tema_id null.
+- Use exatamente as chaves "tema_id", "decisao", "confianca" e "justificativa", sem acentos.
+- A similaridade é apenas uma evidência auxiliar, não uma probabilidade.
+- Retorne exclusivamente um objeto JSON válido, sem Markdown.
+- Nunca retorne tema_id null quando a decisão for "publicar" ou "revisar", para o caso de revisar retorne o tema_id mais plausivel.
 
-      Regras:
-      - Considere o enunciado, o comando e as alternativas.
-      - Use disciplina_origem e assunto_origem como pistas, não como verdade absoluta.
-      - Considere o título, a descrição e o caminho hierárquico de cada tema.
-      - Se um tema candidato for adequado, retorne seu tema_id.
-      - Use "publicar" somente quando houver alta confiança na correspondência.
-      - Use "revisar" quando houver um candidato plausível, mas persistir dúvida.
-      - Use "fora" quando nenhum candidato for adequado.
-      - Não invente IDs de temas.
-      - A similaridade é apenas uma evidência auxiliar, não uma probabilidade.
-      - Retorne somente JSON válido, sem Markdown.
+Questão:
+{question_text}
 
-      Questão:
-      {question_text}
+Temas candidatos:
+{candidates_text}
 
-      Temas candidatos:
-      {candidates_text}
+Formato obrigatório:
+{{
+  "tema_id": null,
+  "decisao": "revisar",
+  "confianca": 0.0,
+  "justificativa": "Explicação objetiva da decisão."
+}}
+"""
 
-      Formato obrigatório:
-      {{
-        "tema_id": null,
-        "decisao": "revisar",
-        "confianca": 0.0,
-        "justificativa": "Explicação objetiva da decisão."
-      }}
-    """
-
-    response = llm(prompt, max_new_tokens=256, do_sample=False, return_full_text=False)
+    response = llm([{"role": "user", "content": prompt}], max_new_tokens=512, do_sample=False, return_full_text=False)
     content = response[0]["generated_text"].strip()
-    result = json.loads(content)
+    print("Resposta do Qwen:", repr(content))
+    if not content:
+        raise ValueError("O LLM retornou uma resposta vazia.")
+    match = re.search(r"\{[\s\S]*\}", content)
+    if not match:
+        raise ValueError(f"O LLM não retornou JSON. Resposta recebida: {content!r}")
+    try:
+        result = json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"O LLM retornou JSON inválido: {content!r}") from exc
+
+    if "decisao" not in result and "decisão" in result:
+        result["decisao"] = result.pop("decisão")
+    if "confianca" not in result and "confiança" in result:
+        result["confianca"] = result.pop("confiança")
 
     valid_ids = {str(candidate["tema_id"]) for candidate in alternatives if candidate["tema_id"] != ""}
     selected_id = result.get("tema_id")
-    if selected_id is not None and str(selected_id) not in valid_ids:
-        raise ValueError(f"O LLM retornou um tema_id que não está entre os candidatos: {selected_id}")
-    if result.get("decisao") not in {"publicar", "revisar", "fora"}:
-        raise ValueError("Decisão inválida retornada pelo LLM.")
-    if result["decisao"] == "fora":
+    decisao = result.get("decisao")
+    if isinstance(decisao, str):
+        decisao = decisao.strip().lower()
+    result["decisao"] = decisao
+    if decisao not in {"publicar", "revisar", "fora"}:
+        raise ValueError(f"Decisão inválida retornada pelo LLM: {content!r}")
+    if decisao == "fora":
         result["tema_id"] = None
-    elif selected_id is None:
-        raise ValueError("É necessário informar tema_id para decisões publicar ou revisar.")
-    if not isinstance(result.get("confianca"), (int, float)) or not 0 <= result["confianca"] <= 1:
+    elif selected_id is None or str(selected_id) not in valid_ids:
+        raise ValueError(f"O LLM selecionou um tema ausente dos candidatos: {selected_id}")
+    confianca = result.get("confianca")
+    if not isinstance(confianca, (int, float)) or isinstance(confianca, bool) or not 0 <= confianca <= 1:
         raise ValueError("A confiança deve ser um número entre 0 e 1.")
-
+    if not isinstance(result.get("justificativa"), str):
+        raise ValueError("A justificativa retornada pelo LLM deve ser texto.")
+    if decisao != "fora":
+        result["tema_id"] = next(candidate["tema_id"] for candidate in alternatives if str(candidate["tema_id"]) == str(selected_id))
     return result
+
 
 
