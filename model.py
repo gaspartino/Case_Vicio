@@ -10,9 +10,22 @@ def get_model(model_type):
 
     return models[model_type]()
 
-
 def create_LLM_model():
-    return pipeline("text-generation", model="Qwen/Qwen2.5-3B-Instruct", device_map="auto")
+    llm = pipeline(
+        "text-generation",
+        model="Qwen/Qwen2.5-3B-Instruct",
+        device_map="auto",
+        clean_up_tokenization_spaces=False,
+    )
+    gc = llm.generation_config
+    gc.max_length = None
+    gc.max_new_tokens = 512
+    gc.temperature = None
+    gc.top_p = None
+    gc.top_k = None
+    llm.model.generation_config = gc
+    return llm
+
 
 def create_embedding_model():
     return SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
