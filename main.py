@@ -1,4 +1,3 @@
-
 import json
 import pandas as pd
 from utils import load_questions, load_themes, retrieve_candidate_themes, classify_question
@@ -11,7 +10,7 @@ def main():
     llm = get_model("llm")
     results = []
     candidate_results = []
-    output_path = "resultados_classificacao.xlsx"
+    output_path = "publicacao.csv"
 
     for index, question in enumerate(questions, start=1):
         question_id = question.get("id", f"Q{index:04d}")
@@ -37,9 +36,7 @@ def main():
             print(f"Erro na questão {question_id}: {exc}")
 
         if index % 10 == 0 or index == len(questions):
-            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-                pd.DataFrame(results).to_excel(writer, sheet_name="Classificações", index=False)
-                pd.DataFrame(candidate_results).to_excel(writer, sheet_name="Candidatos", index=False)
+            pd.DataFrame(results).to_csv(output_path, index=False, encoding="utf-8-sig")
             print(f"Progresso salvo: {index}/{len(questions)} questões")
 
     print(f"Processamento concluído. Arquivo salvo em: {output_path}")
