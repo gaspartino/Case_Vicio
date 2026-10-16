@@ -98,22 +98,33 @@ def classify_question(question, candidates, llm):
     candidates_text = json.dumps(alternatives, ensure_ascii=False)
     prompt = f"""Você é um classificador de questões jurídicas para uma plataforma de estudos.
 
-Analise a questão e escolha o tema que corresponde ao conteúdo jurídico efetivamente cobrado.
+Sua tarefa é identificar o tema que melhor corresponde ao conteúdo jurídico efetivamente cobrado na questão.
 
-Regras:
-- Considere o enunciado, o comando e as alternativas.
-- Use disciplina_origem e assunto_origem como pistas, não como verdade absoluta.
-- Considere o título, a descrição e o caminho hierárquico dos temas.
-- Escolha somente um dos IDs candidatos.
+REGRAS DE CLASSIFICAÇÃO:
+- Analise o enunciado, o comando e todas as alternativas disponíveis.
+- Use disciplina_origem e assunto_origem como pistas auxiliares, não como verdade absoluta.
+- Considere o título, a descrição e o caminho hierárquico de cada tema candidato.
+- Escolha o tema com a melhor correspondência ao conteúdo jurídico central da questão.
+- Não escolha um tema apenas porque sua similaridade é a maior.
 - Use "publicar" somente quando houver forte correspondência temática.
-- Use "revisar" quando houver um candidato plausível, mas persistir dúvida.
-- Use "fora" quando nenhum candidato for adequado.
-- Para "publicar" ou "revisar", informe o tema_id de um candidato.
-- Para "fora", use tema_id null.
-- Use exatamente as chaves "tema_id", "decisao", "confianca" e "justificativa", sem acentos.
+- Use "revisar" quando existir um candidato plausível, mas houver incerteza sobre a correspondência.
+- Use "fora" somente quando nenhum dos candidatos for adequado.
+
+REGRAS OBRIGATÓRIAS PARA tema_id:
+- Para "publicar", selecione o ID de um dos candidatos.
+- Para "revisar", selecione obrigatoriamente o ID do candidato mais plausível, mesmo que exista dúvida.
+- Nunca retorne tema_id null para "publicar" ou "revisar".
+- Para "fora", retorne tema_id null.
+- Copie o tema_id exatamente como aparece na lista de candidatos.
+- Não invente IDs nem selecione temas ausentes da lista.
+
+REGRAS DE SAÍDA:
+- Retorne exclusivamente um objeto JSON válido, sem Markdown ou texto adicional.
+- Use exatamente as chaves "tema_id", "decisao", "confianca" e "justificativa".
+- "decisao" deve ser "publicar", "revisar" ou "fora".
+- "confianca" deve ser um número entre 0 e 1, representando a confiança estimada pelo modelo, não uma probabilidade calibrada.
+- "justificativa" deve explicar objetivamente a correspondência temática ou a ausência dela.
 - A similaridade é apenas uma evidência auxiliar, não uma probabilidade.
-- Retorne exclusivamente um objeto JSON válido, sem Markdown.
-- Nunca retorne tema_id null quando a decisão for "publicar" ou "revisar", para o caso de revisar retorne o tema_id mais plausivel.
 
 Questão:
 {question_text}
@@ -123,10 +134,10 @@ Temas candidatos:
 
 Formato obrigatório:
 {{
-  "tema_id": null,
+  "tema_id": "ID_EXATO_DE_UM_CANDIDATO",
   "decisao": "revisar",
-  "confianca": 0.0,
-  "justificativa": "Explicação objetiva da decisão."
+  "confianca": 0.75,
+  "justificativa": "O tema candidato apresenta correspondência plausível com o conteúdo jurídico cobrado."
 }}
 """
 
@@ -160,6 +171,8 @@ Formato obrigatório:
         result["tema_id"] = None
     elif selected_id is None or str(selected_id) not in valid_ids:
         raise ValueError(f"O LLM selecionou um tema ausente dos candidatos: {selected_id}")
+    elif selected_id is None or str(selected_id) not in valid_ids:
+        raise ValueError(f"O LLM selecionou um tema ausente dos candidatos: {selected_id}")
     confianca = result.get("confianca")
     if not isinstance(confianca, (int, float)) or isinstance(confianca, bool) or not 0 <= confianca <= 1:
         raise ValueError("A confiança deve ser um número entre 0 e 1.")
@@ -168,6 +181,3 @@ Formato obrigatório:
     if decisao != "fora":
         result["tema_id"] = next(candidate["tema_id"] for candidate in alternatives if str(candidate["tema_id"]) == str(selected_id))
     return result
-
-
-
