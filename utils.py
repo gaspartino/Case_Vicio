@@ -91,7 +91,6 @@ def retrieve_candidate_themes(question, classification_themes, model, top_k=5):
 
     return themes.sort_values("similaridade", ascending=False).head(top_k).drop(columns=["texto_busca"]).reset_index(drop=True)
 
-
 def classify_question(question, candidates, llm):
     alternatives = candidates[["tema_id", "titulo", "caminho", "descricao", "similaridade"]].fillna("").to_dict(orient="records")
     question_text = json.dumps(question, ensure_ascii=False)
@@ -118,6 +117,13 @@ REGRAS OBRIGATÓRIAS PARA tema_id:
 - Copie o tema_id exatamente como aparece na lista de candidatos.
 - Não invente IDs nem selecione temas ausentes da lista.
 
+REGRAS ADICIONAIS PARA A CONFIANÇA:
+- Estime a confiança de acordo com as evidências específicas da questão e dos temas candidatos.
+- Não copie valores de confiança de exemplos ou respostas anteriores.
+- Utilize valores diferentes quando a força das evidências for diferente.
+- A confiança deve refletir a segurança da escolha do tema, não apenas a similaridade textual.
+- Não use a confiança isoladamente para decidir se uma questão será publicada.
+
 REGRAS DE SAÍDA:
 - Retorne exclusivamente um objeto JSON válido, sem Markdown ou texto adicional.
 - Use exatamente as chaves "tema_id", "decisao", "confianca" e "justificativa".
@@ -132,16 +138,12 @@ Questão:
 Temas candidatos:
 {candidates_text}
 
-Formato obrigatório:
-{{
-  "tema_id": "ID_EXATO_DE_UM_CANDIDATO",
-  "decisao": "revisar",
-  "confianca": 0.75,
-  "justificativa": "O tema candidato apresenta correspondência plausível com o conteúdo jurídico cobrado."
-}}
 """
 
-    response = llm([{"role": "user", "content": prompt}], max_new_tokens=512, do_sample=False, return_full_text=False)
+    response = llm(
+        [{"role": "user", "content": prompt}],
+        return_full_text=False,
+    )
     content = response[0]["generated_text"].strip()
     print("Resposta do Qwen:", repr(content))
     if not content:
