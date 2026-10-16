@@ -144,6 +144,7 @@ Temas candidatos:
         [{"role": "user", "content": prompt}],
         return_full_text=False,
     )
+
     content = response[0]["generated_text"].strip()
     print("Resposta do Qwen:", repr(content))
     if not content:
@@ -155,31 +156,35 @@ Temas candidatos:
         result = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
         raise ValueError(f"O LLM retornou JSON inválido: {content!r}") from exc
-
+    
     if "decisao" not in result and "decisão" in result:
         result["decisao"] = result.pop("decisão")
     if "confianca" not in result and "confiança" in result:
         result["confianca"] = result.pop("confiança")
-
+    
     valid_ids = {str(candidate["tema_id"]) for candidate in alternatives if candidate["tema_id"] != ""}
     selected_id = result.get("tema_id")
     decisao = result.get("decisao")
     if isinstance(decisao, str):
         decisao = decisao.strip().lower()
     result["decisao"] = decisao
+    
     if decisao not in {"publicar", "revisar", "fora"}:
         raise ValueError(f"Decisão inválida retornada pelo LLM: {content!r}")
+    
     if decisao == "fora":
         result["tema_id"] = None
     elif selected_id is None or str(selected_id) not in valid_ids:
         raise ValueError(f"O LLM selecionou um tema ausente dos candidatos: {selected_id}")
-    elif selected_id is None or str(selected_id) not in valid_ids:
-        raise ValueError(f"O LLM selecionou um tema ausente dos candidatos: {selected_id}")
+    
     confianca = result.get("confianca")
     if not isinstance(confianca, (int, float)) or isinstance(confianca, bool) or not 0 <= confianca <= 1:
         raise ValueError("A confiança deve ser um número entre 0 e 1.")
+    
     if not isinstance(result.get("justificativa"), str):
         raise ValueError("A justificativa retornada pelo LLM deve ser texto.")
+    
     if decisao != "fora":
         result["tema_id"] = next(candidate["tema_id"] for candidate in alternatives if str(candidate["tema_id"]) == str(selected_id))
+    
     return result
