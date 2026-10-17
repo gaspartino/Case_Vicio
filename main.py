@@ -17,7 +17,7 @@ def main():
         print(f"[{index}/{len(questions)}] Classificando {question_id}")
 
         try:
-            candidates = retrieve_candidate_themes(question, classification_themes, embedding, top_k=5)
+            candidates = retrieve_candidate_themes(question, classification_themes, embedding, top_k=15)
 
             for candidate in candidates.to_dict(orient="records"):
                 candidate_results.append({"questao_id": question_id, **candidate})
