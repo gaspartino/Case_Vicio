@@ -3,8 +3,8 @@ import json
 import html
 import pandas as pd
 from transformers import pipeline
+from json_repair import repair_json
 from sentence_transformers import SentenceTransformer, util
-
 
 def load_questions(file_path, discipline=None, subject=None):
     questions = []
@@ -91,100 +91,141 @@ def retrieve_candidate_themes(question, classification_themes, model, top_k=5):
 
     return themes.sort_values("similaridade", ascending=False).head(top_k).drop(columns=["texto_busca"]).reset_index(drop=True)
 
+
 def classify_question(question, candidates, llm):
     alternatives = candidates[["tema_id", "titulo", "caminho", "descricao", "similaridade"]].fillna("").to_dict(orient="records")
+    if not alternatives:
+        raise ValueError("Nenhum tema candidato foi fornecido.")
+
+    valid_ids = {str(candidate["tema_id"]).strip() for candidate in alternatives if str(candidate["tema_id"]).strip()}
     question_text = json.dumps(question, ensure_ascii=False)
     candidates_text = json.dumps(alternatives, ensure_ascii=False)
+
     prompt = f"""Você é um classificador de questões jurídicas para uma plataforma de estudos.
 
 Sua tarefa é identificar o tema que melhor corresponde ao conteúdo jurídico efetivamente cobrado na questão.
 
 REGRAS DE CLASSIFICAÇÃO:
-- Analise o enunciado, o comando e todas as alternativas disponíveis.
+- Analise o enunciado, o comando e todas as alternativas.
 - Use disciplina_origem e assunto_origem como pistas auxiliares, não como verdade absoluta.
 - Considere o título, a descrição e o caminho hierárquico de cada tema candidato.
-- Escolha o tema com a melhor correspondência ao conteúdo jurídico central da questão.
+- Identifique o instituto jurídico central efetivamente cobrado.
 - Não escolha um tema apenas porque sua similaridade é a maior.
-- Use "publicar" somente quando houver forte correspondência temática.
-- Use "revisar" quando existir um candidato plausível, mas houver incerteza sobre a correspondência.
-- Use "fora" somente quando nenhum dos candidatos for adequado.
+- Não invente relações jurídicas para justificar uma escolha.
+- "publicar": correspondência temática forte e direta.
+- "revisar": existe um candidato plausível, mas há incerteza.
+- "fora": nenhum candidato corresponde adequadamente.
 
 REGRAS OBRIGATÓRIAS PARA tema_id:
-- Para "publicar", selecione o ID de um dos candidatos.
-- Para "revisar", selecione obrigatoriamente o ID do candidato mais plausível, mesmo que exista dúvida.
-- Nunca retorne tema_id null para "publicar" ou "revisar".
+- Para "publicar" ou "revisar", selecione o ID de um dos candidatos.
 - Para "fora", retorne tema_id null.
-- Copie o tema_id exatamente como aparece na lista de candidatos.
-- Não invente IDs nem selecione temas ausentes da lista.
+- Copie o tema_id exatamente como aparece na lista.
+- Nunca invente IDs nem selecione temas ausentes dos candidatos.
 
-REGRAS ADICIONAIS PARA A CONFIANÇA:
-- Estime a confiança de acordo com as evidências específicas da questão e dos temas candidatos.
-- Não copie valores de confiança de exemplos ou respostas anteriores.
-- Utilize valores diferentes quando a força das evidências for diferente.
-- A confiança deve refletir a segurança da escolha do tema, não apenas a similaridade textual.
-- Não use a confiança isoladamente para decidir se uma questão será publicada.
+REGRAS PARA A CONFIANÇA:
+- Use um número decimal entre 0 e 1, inclusive.
+- Não retorne porcentagens como 85 ou 95.
+- A confiança deve refletir a força das evidências temáticas.
+- A confiança é uma estimativa subjetiva, não uma probabilidade calibrada.
+- Não use a confiança isoladamente para decidir a publicação.
 
 REGRAS DE SAÍDA:
 - Retorne exclusivamente um objeto JSON válido, sem Markdown ou texto adicional.
 - Use exatamente as chaves "tema_id", "decisao", "confianca" e "justificativa".
 - "decisao" deve ser "publicar", "revisar" ou "fora".
-- "confianca" deve ser um número entre 0 e 1, representando a confiança estimada pelo modelo, não uma probabilidade calibrada.
-- "justificativa" deve explicar objetivamente a correspondência temática ou a ausência dela.
-- A similaridade é apenas uma evidência auxiliar, não uma probabilidade.
+- "justificativa" deve explicar objetivamente a escolha.
+- Não utilize aspas duplas sem escape dentro de valores de texto.
+
+Formato obrigatório:
+{{"tema_id": "ID_DO_CANDIDATO_OU_NULL", "decisao": "publicar", "confianca": 0.85, "justificativa": "Correspondência temática identificada."}}
 
 Questão:
 {question_text}
 
 Temas candidatos:
 {candidates_text}
-
 """
 
-    response = llm(
-        [{"role": "user", "content": prompt}],
-        return_full_text=False,
-    )
+    last_error = None
 
-    content = response[0]["generated_text"].strip()
-    print("Resposta do Qwen:", repr(content))
-    if not content:
-        raise ValueError("O LLM retornou uma resposta vazia.")
-    match = re.search(r"\{[\s\S]*\}", content)
-    if not match:
-        raise ValueError(f"O LLM não retornou JSON. Resposta recebida: {content!r}")
-    try:
-        result = json.loads(match.group(0))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"O LLM retornou JSON inválido: {content!r}") from exc
-    
-    if "decisao" not in result and "decisão" in result:
-        result["decisao"] = result.pop("decisão")
-    if "confianca" not in result and "confiança" in result:
-        result["confianca"] = result.pop("confiança")
-    
-    valid_ids = {str(candidate["tema_id"]) for candidate in alternatives if candidate["tema_id"] != ""}
-    selected_id = result.get("tema_id")
-    decisao = result.get("decisao")
-    if isinstance(decisao, str):
-        decisao = decisao.strip().lower()
-    result["decisao"] = decisao
-    
-    if decisao not in {"publicar", "revisar", "fora"}:
-        raise ValueError(f"Decisão inválida retornada pelo LLM: {content!r}")
-    
-    if decisao == "fora":
-        result["tema_id"] = None
-    elif selected_id is None or str(selected_id) not in valid_ids:
-        raise ValueError(f"O LLM selecionou um tema ausente dos candidatos: {selected_id}")
-    
-    confianca = result.get("confianca")
-    if not isinstance(confianca, (int, float)) or isinstance(confianca, bool) or not 0 <= confianca <= 1:
-        raise ValueError("A confiança deve ser um número entre 0 e 1.")
-    
-    if not isinstance(result.get("justificativa"), str):
-        raise ValueError("A justificativa retornada pelo LLM deve ser texto.")
-    
-    if decisao != "fora":
-        result["tema_id"] = next(candidate["tema_id"] for candidate in alternatives if str(candidate["tema_id"]) == str(selected_id))
-    
-    return result
+    for attempt in range(2):
+        current_prompt = prompt if attempt == 0 else f"""{prompt}
+
+ATENÇÃO: A resposta anterior não passou pela validação.
+Motivo: {last_error}
+
+Gere uma nova resposta corrigindo o problema. Retorne um único objeto JSON válido, com as quatro chaves exigidas, um ID existente para "publicar" ou "revisar", null para "fora" e confiança numérica entre 0 e 1.
+"""
+
+        try:
+            response = llm([{"role": "user", "content": current_prompt}], return_full_text=False)
+            content = response[0]["generated_text"].strip()
+
+            if not content:
+                raise ValueError("O LLM retornou uma resposta vazia.")
+
+            match = re.search(r"\{[\s\S]*\}", content)
+
+            if not match:
+                raise ValueError(f"O LLM não retornou um objeto JSON: {content!r}")
+
+            try:
+                result = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                result = repair_json(match.group(0), return_objects=True)
+
+            if not isinstance(result, dict):
+                raise ValueError("A resposta não é um objeto JSON.")
+
+            if "decisao" not in result and "decisão" in result:
+                result["decisao"] = result.pop("decisão")
+
+            if "confianca" not in result and "confiança" in result:
+                result["confianca"] = result.pop("confiança")
+
+            decisao = result.get("decisao")
+
+            if isinstance(decisao, str):
+                decisao = decisao.strip().lower()
+                decisao = {"publlicar": "publicar"}.get(decisao, decisao)
+
+            if decisao not in {"publicar", "revisar", "fora"}:
+                raise ValueError(f"Decisão inválida: {decisao!r}")
+
+            selected_id = result.get("tema_id")
+
+            if decisao == "fora":
+                result["tema_id"] = None
+            else:
+                if selected_id is None or str(selected_id).strip() not in valid_ids:
+                    raise ValueError(f"ID de tema ausente ou inválido: {selected_id!r}")
+
+                result["tema_id"] = next(candidate["tema_id"] for candidate in alternatives if str(candidate["tema_id"]).strip() == str(selected_id).strip())
+
+            confianca = result.get("confianca")
+
+            if isinstance(confianca, str):
+                try:
+                    confianca = float(confianca.strip().replace(",", "."))
+                except ValueError:
+                    raise ValueError(f"Confiança não numérica: {confianca!r}")
+
+            if not isinstance(confianca, (int, float)) or isinstance(confianca, bool) or not 0 <= confianca <= 1:
+                raise ValueError(f"Confiança deve estar entre 0 e 1: {confianca!r}")
+
+            justificativa = result.get("justificativa")
+
+            if not isinstance(justificativa, str) or not justificativa.strip():
+                raise ValueError("Justificativa ausente ou inválida.")
+
+            result["decisao"] = decisao
+            result["confianca"] = float(confianca)
+            result["justificativa"] = justificativa.strip()
+
+            return result
+
+        except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as exc:
+            last_error = str(exc)
+            print(f"Tentativa {attempt + 1}/2 falhou: {last_error}")
+
+    raise ValueError(f"Falha após 2 tentativas de classificação: {last_error}")
