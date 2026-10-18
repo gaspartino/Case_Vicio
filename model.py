@@ -10,6 +10,7 @@ def get_model(model_type):
 
     return models[model_type]()
 
+
 def create_LLM_model():
     llm = pipeline(
         "text-generation",
@@ -28,4 +29,4 @@ def create_LLM_model():
 
 
 def create_embedding_model():
-    return SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    return SentenceTransformer("BAAI/bge-m3")
