@@ -94,6 +94,7 @@ def build_theme_index(classification_themes, model):
     return indexes, themes
 
 
+
 def retrieve_candidate_themes(question, classification_themes, model, index, top_k=15):
     def clean_text(text):
         text = html.unescape(str(text or ""))
@@ -103,11 +104,10 @@ def retrieve_candidate_themes(question, classification_themes, model, index, top
 
     alternatives = question.get("alternativas", {})
     alternatives_text = " ".join(f"{key}: {value}" for key, value in alternatives.items()) if isinstance(alternatives, dict) else ""
-    question_text = " ".join(filter(None, [clean_text(question.get("enunciado_html", "")), clean_text(question.get("comando", "")), clean_text(alternatives_text), clean_text(question.get("assunto_origem", ""))]))
+    question_text = " ".join(filter(None, [clean_text(question.get("enunciado_html", "")), clean_text(question.get("comando", "")), clean_text(alternatives_text)]))
     if not question_text:
         return pd.DataFrame()
-    discipline = normalize_discipline(question.get("disciplina_origem", ""))
-    search_index, themes = index.get(discipline, index["global"])
+    search_index, themes = index["global"]
     question_embedding = model.encode([question_text], convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
     question_embedding = np.ascontiguousarray(question_embedding, dtype=np.float32)
     scores, indices = search_index.search(question_embedding, min(top_k, len(themes)))
@@ -115,7 +115,6 @@ def retrieve_candidate_themes(question, classification_themes, model, index, top
     result = themes.iloc[indices[0][valid]].copy()
     result["similaridade"] = scores[0][valid]
     return result.sort_values("similaridade", ascending=False).reset_index(drop=True).drop(columns=["texto_busca", "disciplina_norm"], errors="ignore")
-
 
 
 def classify_question(question, candidates, llm):
@@ -131,16 +130,46 @@ def classify_question(question, candidates, llm):
 
 Sua tarefa é identificar o tema que melhor corresponde ao conteúdo jurídico efetivamente cobrado na questão.
 
-REGRAS DE CLASSIFICAÇÃO:
-- Analise o enunciado, o comando e todas as alternativas.
-- Use disciplina_origem e assunto_origem como pistas auxiliares, não como verdade absoluta.
-- Considere o título, a descrição e o caminho hierárquico de cada tema candidato.
-- Identifique o instituto jurídico central efetivamente cobrado.
-- Não escolha um tema apenas porque sua similaridade é a maior.
-- Não invente relações jurídicas para justificar uma escolha.
-- "publicar": correspondência temática forte e direta.
-- "revisar": existe um candidato plausível, mas há incerteza.
-- "fora": nenhum candidato corresponde adequadamente.
+REGRAS DE CLASSIFICAÇÃO E DECISÃO:
+
+Analise integralmente o enunciado, o comando e todas as alternativas da questão. Utilize `disciplina_origem` e `assunto_origem` como informações auxiliares, sem considerá-las necessariamente corretas. Compare o conteúdo da questão com o título, a descrição e o caminho hierárquico dos temas candidatos, identificando o instituto jurídico central efetivamente cobrado.
+
+Não escolha um tema apenas por apresentar a maior similaridade semântica. A decisão deve ser fundamentada na correspondência jurídica e temática entre a questão e o tema escolhido. Não invente relações jurídicas, não force uma correspondência e não confunda assuntos relacionados com equivalência temática.
+
+1. publicar — correspondência temática suficientemente segura**
+
+Escolha `publicar` quando houver evidências claras de que o tema selecionado corresponde ao conteúdo efetivamente cobrado e quando a confiança na classificação for suficientemente alta para justificar a publicação automática.
+
+A correspondência deve ser avaliada considerando a hierarquia da árvore temática. Uma classificação pode ser considerada correta quando o tema escolhido for o mesmo tema atribuído pela equipe ou um ancestral ou descendente pertencente ao mesmo ramo, conforme a regra de avaliação do desafio. Entretanto, não considere automaticamente corretos dois subtemas diferentes apenas por pertencerem ao mesmo tema pai.
+
+Como uma publicação incorreta faz o aluno estudar a questão no assunto errado, adote um critério conservador: publique somente quando houver evidências suficientes para sustentar a escolha. O objetivo é alcançar pelo menos 95% de acerto entre as questões publicadas e, respeitada essa condição, maximizar a quantidade de questões publicadas.
+
+2. revisar — correspondência plausível, mas insuficientemente segura**
+
+Escolha `revisar` quando existir um tema candidato razoável, mas houver incerteza relevante que impeça a publicação automática.
+
+Isso inclui situações em que:
+- Dois ou mais temas apresentam correspondência jurídica plausível.
+- O tema candidato trata de assunto relacionado, mas não está claro se representa o instituto jurídico central da questão.
+- O título, a descrição ou a posição hierárquica dos candidatos não permitem distinguir com segurança o tema adequado.
+- As informações de origem entram em conflito com o conteúdo efetivo da questão.
+- Há indícios de que o tema correto não foi recuperado entre os candidatos disponíveis, mas ainda existe uma hipótese plausível que merece avaliação humana.
+
+Sempre que possível, indique o tema mais provável como sugestão e explique objetivamente a dúvida que exige intervenção do professor. A revisão deve ser utilizada para resolver incertezas reais, evitando encaminhar questões que poderiam ser classificadas com segurança.
+
+3. fora — ausência de correspondência adequada**
+
+Escolha `fora` quando nenhum dos temas candidatos representar adequadamente o instituto jurídico central cobrado pela questão.
+
+Utilize essa decisão quando os candidatos disponíveis forem apenas superficialmente relacionados ao enunciado, pertencerem a assuntos juridicamente distintos ou não houver evidências suficientes de que algum deles seja uma opção temática válida.
+
+Não escolha um tema inadequado apenas para evitar essa decisão. Por outro lado, não use `fora` simplesmente porque a classificação é difícil: se houver um candidato plausível, mas incerto, prefira `revisar`.
+
+**CRITÉRIO GERAL DE PRIORIZAÇÃO**
+
+A prioridade é maximizar o número de questões publicadas sem reduzir a precisão das publicações abaixo de 95%. Portanto, a decisão não deve buscar publicar o maior número possível de questões a qualquer custo. Questões com correspondência forte e direta devem ser publicadas; questões plausíveis, mas incertas, devem ser revisadas; e questões sem correspondência temática adequada devem ser classificadas como fora.
+
+A justificativa de cada decisão deve explicar a relação entre o instituto jurídico cobrado e o tema escolhido, indicando por que a correspondência é segura, por que exige revisão ou por que nenhum candidato é adequado.
 
 REGRAS OBRIGATÓRIAS PARA tema_id:
 - Para "publicar" ou "revisar", selecione o ID de um dos candidatos.
@@ -149,11 +178,18 @@ REGRAS OBRIGATÓRIAS PARA tema_id:
 - Nunca invente IDs nem selecione temas ausentes dos candidatos.
 
 REGRAS PARA A CONFIANÇA:
-- Use um número decimal entre 0 e 1, inclusive.
-- Não retorne porcentagens como 85 ou 95.
-- A confiança deve refletir a força das evidências temáticas.
-- A confiança é uma estimativa subjetiva, não uma probabilidade calibrada.
-- Não use a confiança isoladamente para decidir a publicação.
+
+- Retorne um número decimal entre 0 e 1, sem se limitar a valores predefinidos.
+- Avalie a confiança individualmente para cada questão, com base nas evidências disponíveis. Não reutilize automaticamente valores atribuídos a questões anteriores.
+- **0.90–1.00:** correspondência temática direta, instituto jurídico claramente identificado e pouca ambiguidade entre os candidatos.
+- **0.75–0.89:** correspondência forte, mas com alguma dúvida sobre a especificidade do tema ou sobre a distinção entre candidatos próximos.
+- **0.50–0.74:** correspondência plausível, com incertezas relevantes ou evidências incompletas.
+- **0.25–0.49:** correspondência fraca, sustentada principalmente por relações indiretas ou semelhanças superficiais.
+- **0.00–0.24:** evidências mínimas de correspondência com o tema escolhido.
+- As faixas são referências qualitativas, não probabilidades calibradas nem limites automáticos para publicação.
+- Não escolha uma faixa apenas para justificar a decisão tomada. Primeiro avalie a correspondência temática; depois atribua a confiança compatível com as evidências.
+- Se nenhum candidato for adequado, não atribua confiança alta à correspondência com um tema específico. Diferencie a confiança na escolha de um tema da confiança de que nenhum candidato serve.
+- A justificativa deve apresentar evidências compatíveis com a confiança atribuída.
 
 REGRAS DE SAÍDA:
 - Retorne exclusivamente um objeto JSON válido, sem Markdown ou texto adicional.
