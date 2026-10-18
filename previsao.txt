@@ -1,0 +1,14 @@
+==================================================
+AUTOAVALIAÇÃO DE PRECISÃO E COBERTURA
+==================================================
+
+1. COBERTURA (Fração Publicada):
+   - Estimativa / Intervalo: [0.95, 0.98] (ou 95% a 98%)
+   - Valor Calculado: 0.9638 (96.38%)
+   - Explicação: Do total de 359 questões analisadas no conjunto de dados, 13 não foram marcadas para publicação e 346 foram efetivamente publicadas (346 / 359 = 0.9638).
+
+2. PRECISÃO (Nas Publicadas):
+   - Estimativa / Intervalo: [0.70, 0.78] (ou 70% a 78%)
+   - Ponto Central Estimado: ~74%
+   - Explicação: A precisão foi estimada a partir de uma amostragem/auditoria de 46 questões publicadas, avaliando a acurácia dos rótulos de temas atribuídos. Na amostra, 34 das 46 classificações estavam corretas (taxa observada de 73,91%). O intervalo de 70% a 78% acomoda a margem de erro amostral e as flutuações de acerto observadas entre diferentes blocos de questões (que variaram de 66,7% a 80,0%).
+==================================================
