@@ -1,7 +1,10 @@
+import numpy as np
 import re
 import json
 import html
+import faiss
 import pandas as pd
+import unicodedata
 from transformers import pipeline
 from json_repair import repair_json
 from sentence_transformers import SentenceTransformer, util
@@ -51,7 +54,47 @@ def load_themes(csv_path):
     return themes, root_themes, classification_themes
 
 
-def retrieve_candidate_themes(question, classification_themes, model, top_k=5):
+def normalize_discipline(value):
+    value = unicodedata.normalize("NFKD", str(value or ""))
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    value = re.sub(r"\s+", " ", value).strip().casefold()
+    aliases = {"direito penal": "penal", "penal": "penal", "direito processual penal": "processo penal", "processo penal": "processo penal", "criminologia": "criminologia", "legislacao penal especial": "legislacao penal especial"}
+    return aliases.get(value, value)
+    
+
+
+def normalize_discipline(value):
+    value = unicodedata.normalize("NFKD", str(value or ""))
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    value = re.sub(r"\s+", " ", value).strip().casefold()
+    aliases = {"direito penal": "penal", "penal": "penal", "direito processual penal": "processo penal", "processo penal": "processo penal", "criminologia": "criminologia", "legislacao penal especial": "legislacao penal especial"}
+    return aliases.get(value, value)
+
+
+def build_theme_index(classification_themes, model):
+    themes = classification_themes.copy().reset_index(drop=True)
+    for column in ["disciplina", "titulo", "caminho", "descricao"]:
+        themes[column] = themes[column].fillna("").astype(str).str.strip()
+    themes["disciplina_norm"] = themes["disciplina"].apply(normalize_discipline)
+    themes["texto_busca"] = themes.apply(lambda row: f"Disciplina: {row['disciplina']}. Tema: {row['titulo']}. Hierarquia temática: {row['caminho']}. Descrição: {row['descricao']}", axis=1)
+    embeddings = model.encode(themes["texto_busca"].tolist(), convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
+    embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+    global_index = faiss.IndexFlatIP(embeddings.shape[1])
+    global_index.add(embeddings)
+    indexes = {"global": (global_index, themes)}
+    for discipline in themes["disciplina_norm"].unique():
+        subset = themes[themes["disciplina_norm"] == discipline].copy().reset_index(drop=True)
+        if subset.empty:
+            continue
+        subset_embeddings = model.encode(subset["texto_busca"].tolist(), convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
+        subset_embeddings = np.ascontiguousarray(subset_embeddings, dtype=np.float32)
+        discipline_index = faiss.IndexFlatIP(subset_embeddings.shape[1])
+        discipline_index.add(subset_embeddings)
+        indexes[discipline] = (discipline_index, subset)
+    return indexes, themes
+
+
+def retrieve_candidate_themes(question, classification_themes, model, index, top_k=15):
     def clean_text(text):
         text = html.unescape(str(text or ""))
         text = re.sub(r"<br\s*/?>", " ", text, flags=re.IGNORECASE)
@@ -60,36 +103,19 @@ def retrieve_candidate_themes(question, classification_themes, model, top_k=5):
 
     alternatives = question.get("alternativas", {})
     alternatives_text = " ".join(f"{key}: {value}" for key, value in alternatives.items()) if isinstance(alternatives, dict) else ""
-
-    question_text = " ".join(filter(None, [clean_text(question.get("enunciado_html", "")), clean_text(question.get("comando", "")), clean_text(alternatives_text), clean_text(question.get("disciplina_origem", "")), clean_text(question.get("assunto_origem", ""))]))
-
+    question_text = " ".join(filter(None, [clean_text(question.get("enunciado_html", "")), clean_text(question.get("comando", "")), clean_text(alternatives_text), clean_text(question.get("assunto_origem", ""))]))
     if not question_text:
         return pd.DataFrame()
+    discipline = normalize_discipline(question.get("disciplina_origem", ""))
+    search_index, themes = index.get(discipline, index["global"])
+    question_embedding = model.encode([question_text], convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
+    question_embedding = np.ascontiguousarray(question_embedding, dtype=np.float32)
+    scores, indices = search_index.search(question_embedding, min(top_k, len(themes)))
+    valid = indices[0] >= 0
+    result = themes.iloc[indices[0][valid]].copy()
+    result["similaridade"] = scores[0][valid]
+    return result.sort_values("similaridade", ascending=False).reset_index(drop=True).drop(columns=["texto_busca", "disciplina_norm"], errors="ignore")
 
-    themes = classification_themes.copy()
-    text_columns = ["disciplina", "titulo", "caminho", "descricao"]
-
-    for column in text_columns:
-        themes[column] = themes[column].fillna("").astype(str).str.strip()
-
-    discipline = clean_text(question.get("disciplina_origem", "")).casefold()
-
-    if discipline:
-        matching_themes = themes[themes["disciplina"].str.casefold() == discipline]
-        if not matching_themes.empty:
-            themes = matching_themes
-
-    if themes.empty:
-        return pd.DataFrame()
-
-    themes["texto_busca"] = themes.apply(lambda row: f"Título: {row['titulo']}. Caminho: {row['caminho']}. Descrição: {row['descricao']}", axis=1)
-
-    question_embedding = model.encode(question_text, convert_to_tensor=True, normalize_embeddings=True)
-    theme_embeddings = model.encode(themes["texto_busca"].tolist(), convert_to_tensor=True, normalize_embeddings=True, show_progress_bar=False)
-
-    themes["similaridade"] = util.cos_sim(question_embedding, theme_embeddings)[0].cpu().numpy()
-
-    return themes.sort_values("similaridade", ascending=False).head(top_k).drop(columns=["texto_busca"]).reset_index(drop=True)
 
 
 def classify_question(question, candidates, llm):
