@@ -53,6 +53,128 @@ def load_themes(csv_path):
 
     return themes, root_themes, classification_themes
 
+def load_training_data(csv_path):
+    training_data = pd.read_csv(csv_path, dtype={"id": str, "tema_central_id": str, "extras_ids": str})
+    required_columns = ["id", "tema_central_id", "tema_central_caminho", "extras_ids", "fora_da_taxonomia"]
+    missing_columns = [column for column in required_columns if column not in training_data.columns]
+
+    if missing_columns:
+        raise ValueError(f"Colunas ausentes no CSV: {missing_columns}")
+
+    training_data["id"] = training_data["id"].fillna("").str.strip()
+    training_data["tema_central_id"] = training_data["tema_central_id"].fillna("").str.strip()
+    training_data["tema_central_caminho"] = training_data["tema_central_caminho"].fillna("").str.strip()
+    training_data["extras_ids"] = training_data["extras_ids"].fillna("").str.strip()
+    training_data["fora_da_taxonomia"] = pd.to_numeric(training_data["fora_da_taxonomia"], errors="raise").astype(int)
+
+    if training_data["id"].duplicated().any():
+        raise ValueError("Existem IDs de questões duplicados.")
+
+    return training_data
+
+def build_complete_training_data(training_data, questions, themes):
+    questions_by_id = {str(question.get("id", "")).strip(): question for question in questions}
+    themes_by_id = {str(theme["tema_id"]).strip(): theme.to_dict() for _, theme in themes.iterrows()}
+    complete_data = []
+
+    for _, row in training_data.iterrows():
+        record = row.to_dict()
+        question_id = str(record["id"]).strip()
+        question = questions_by_id.get(question_id)
+
+        if question is None:
+            raise ValueError(f"Questão '{question_id}' não encontrada em questoes.jsonl.")
+
+        record.update({key: value for key, value in question.items() if key != "id"})
+
+        central_id = str(record.get("tema_central_id") or "").strip()
+        central_theme = themes_by_id.get(central_id)
+
+        record["tema_central"] = central_theme
+        record["tema_central_descricao"] = central_theme.get("descricao", "") if central_theme else ""
+
+        extras_ids = [theme_id.strip() for theme_id in str(record.get("extras_ids") or "").split(";") if theme_id.strip()]
+        record["temas_extras"] = [themes_by_id[theme_id] if theme_id in themes_by_id else {"tema_id": theme_id, "nao_encontrado": True} for theme_id in extras_ids]
+
+        complete_data.append(record)
+
+    return pd.DataFrame(complete_data)
+
+
+def build_question_text(question):
+    def clean_text(value):
+        value = html.unescape(str(value or ""))
+        value = re.sub(r"<br\s*/?>", " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"<[^>]+>", " ", value)
+        return re.sub(r"\s+", " ", value).strip()
+
+    alternatives = question.get("alternativas", {})
+    if isinstance(alternatives, dict):
+        alternatives_text = " ".join(f"{key}: {value}" for key, value in alternatives.items())
+    elif isinstance(alternatives, list):
+        alternatives_text = " ".join(str(value) for value in alternatives)
+    else:
+        alternatives_text = str(alternatives or "")
+
+    parts = [question.get("enunciado_html", ""), question.get("comando", ""), alternatives_text]
+    return " ".join(clean_text(part) for part in parts if clean_text(part))
+
+
+def train_classifiers(complete_training_data, embedding_model, classifiers):
+    data = complete_training_data.copy()
+    data["fora_da_taxonomia"] = pd.to_numeric(data["fora_da_taxonomia"], errors="raise").astype(int)
+
+    if not data["fora_da_taxonomia"].isin([0, 1]).all():
+        raise ValueError("'fora_da_taxonomia' deve conter apenas 0 ou 1.")
+
+    texts = data.apply(lambda row: build_question_text(row.to_dict()), axis=1).tolist()
+    embeddings = embedding_model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+
+    classifiers["outside_taxonomy"].fit(embeddings, data["fora_da_taxonomia"])
+
+    central_mask = (data["fora_da_taxonomia"] == 0) & data["tema_central_id"].notna() & (data["tema_central_id"].astype(str).str.strip() != "")
+    central_data = data.loc[central_mask]
+
+    if central_data["tema_central_id"].nunique() < 2:
+        raise ValueError("São necessários pelo menos dois temas centrais distintos para treinar o classificador.")
+
+    central_embeddings = embeddings[central_mask.to_numpy()]
+    central_labels = central_data["tema_central_id"].astype(str).str.strip()
+
+    classifiers["central_theme"].fit(central_embeddings, central_labels)
+
+    return classifiers
+
+
+
+def predict_question(question, embedding_model, classifiers, classification_themes):
+    text = build_question_text(question)
+    embedding = embedding_model.encode([text], convert_to_numpy=True)
+
+    outside_prediction = int(classifiers["outside_taxonomy"].predict(embedding)[0])
+
+    result = {
+        "id": question.get("id", ""),
+        "fora_da_taxonomia": outside_prediction,
+        "tema_central_id": None,
+        "tema_central_caminho": None
+    }
+
+    if outside_prediction == 1:
+        return result
+
+    central_theme_id = str(classifiers["central_theme"].predict(embedding)[0])
+    matching_theme = classification_themes.loc[classification_themes["tema_id"].astype(str) == central_theme_id]
+
+    if matching_theme.empty:
+        result["tema_central_id"] = central_theme_id
+        return result
+
+    result["tema_central_id"] = central_theme_id
+    result["tema_central_caminho"] = matching_theme.iloc[0]["caminho"]
+
+    return result
+
 
 def normalize_discipline(value):
     value = unicodedata.normalize("NFKD", str(value or ""))
