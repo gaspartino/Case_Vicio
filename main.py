@@ -1,6 +1,9 @@
 import json
 import pandas as pd
-from utils import load_questions, load_themes, build_theme_index, retrieve_candidate_themes, classify_question
+from utils import (load_questions, load_themes, build_theme_index, 
+                  retrieve_candidate_themes, classify_question, load_training_data,
+                  build_complete_training_data, build_question_text, train_classifiers,
+                  predict_question)
 from model import get_model
 
 
@@ -59,4 +62,24 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    training_data = load_training_data("data/folha_verdade.csv")
+    questions = load_questions("data/questoes.jsonl")
+    themes, root_themes, classification_themes = load_themes("data/temas.csv")
+
+    complete_training_data = build_complete_training_data(training_data, questions, themes)
+
+    embedding_model = get_model("embedding")
+    classifiers = get_model("classifier")
+
+    classifiers = train_classifiers(complete_training_data, embedding_model, classifiers)
+
+    
+    predictions = [
+        predict_question(question, embedding_model, classifiers, classification_themes)
+        for question in questions
+    ]
+
+    predictions_df = pd.DataFrame(predictions)
+    predictions_df.to_csv("data/previsoes.csv", index=False, encoding="utf-8-sig")
+
+    #main()
