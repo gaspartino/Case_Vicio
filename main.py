@@ -1,85 +1,60 @@
-import json
+import argparse
 import pandas as pd
-from utils import (load_questions, load_themes, build_theme_index, 
-                  retrieve_candidate_themes, classify_question, load_training_data,
-                  build_complete_training_data, build_question_text, train_classifiers,
-                  predict_question)
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 from model import get_model
+from utils import load_questions, load_themes, load_training_data, build_complete_training_data, train_classifiers, predict_question, split_questions_by_training_data, create_theme_index
 
 
-def main():
-    questions = load_questions("data/questoes.jsonl")
-    themes, root_themes, classification_themes = load_themes("data/temas.csv")
-    embedding = get_model("embedding")
-    llm = get_model("llm")
-    classification_themes = classification_themes.reset_index(drop=True)
-    faiss_indexes, indexed_themes = build_theme_index(classification_themes, embedding)
-    results = []
-    candidate_results = []
-    output_path = "publicacao.csv"
-    candidates_path = "candidatos.csv"
-
-    for index, question in enumerate(questions, start=1):
-        question_id = question.get("id", f"Q{index:04d}")
-        print(f"[{index}/{len(questions)}] Classificando {question_id}")
-
-        try:
-            candidates = retrieve_candidate_themes(question, indexed_themes, embedding, faiss_indexes, top_k=15)
-
-            for candidate in candidates.to_dict(orient="records"):
-                candidate_results.append({"questao_id": question_id, **candidate})
-
-            if candidates.empty:
-                classification = {"tema_id": None, "decisao": "fora", "confianca": 0.0, "justificativa": "Nenhum tema candidato foi recuperado."}
-            else:
-                classification = classify_question(question, candidates, llm)
-
-            selected_id = classification.get("tema_id")
-            selected_theme = candidates[candidates["tema_id"].astype(str) == str(selected_id)] if selected_id is not None else pd.DataFrame()
-            theme_title = selected_theme.iloc[0]["titulo"] if not selected_theme.empty else None
-
-            question_data = {key: json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value for key, value in question.items()}
-            results.append({**question_data, **classification, "tema_titulo": theme_title, "status_processamento": "sucesso", "erro": None})
-
-        except Exception as exc:
-            question_data = {key: json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value for key, value in question.items()}
-            results.append({**question_data, "tema_id": None, "tema_titulo": None, "decisao": "erro", "confianca": None, "justificativa": None, "status_processamento": "erro", "erro": str(exc)})
-            print(f"Erro na questão {question_id}: {exc}")
-
-        if index % 10 == 0 or index == len(questions):
-            pd.DataFrame(results).to_csv(output_path, index=False, encoding="utf-8-sig")
-            pd.DataFrame(candidate_results).to_csv(candidates_path, index=False, encoding="utf-8-sig")
-            print(f"Progresso salvo: {index}/{len(questions)} questões")
-
-    results_df = pd.DataFrame(results)
-    print(f"Processamento concluído. Arquivo salvo em: {output_path}")
-    print(f"Candidatos salvos em: {candidates_path}")
-    print(results_df["decisao"].value_counts(dropna=False))
-    print(f"Erros de processamento: {(results_df['status_processamento'] == 'erro').sum()}")
-    print(f"Questões para publicar: {(results_df['decisao'] == 'publicar').sum()}")
-    print(f"Questões para revisar: {(results_df['decisao'] == 'revisar').sum()}")
-    print(f"Questões fora do catálogo: {(results_df['decisao'] == 'fora').sum()}")
-
-
-if __name__ == "__main__":
+def main(test=False):
     training_data = load_training_data("data/folha_verdade.csv")
     questions = load_questions("data/questoes.jsonl")
     themes, root_themes, classification_themes = load_themes("data/temas.csv")
 
-    complete_training_data = build_complete_training_data(training_data, questions, themes)
+    train_questions, prod_questions = split_questions_by_training_data(questions, training_data)
 
     embedding_model = get_model("embedding")
     classifiers = get_model("classifier")
+    theme_index, theme_embeddings = create_theme_index(classification_themes, embedding_model)
 
-    classifiers = train_classifiers(complete_training_data, embedding_model, classifiers)
+    output_path = "publicacao.csv"
 
-    
-    predictions = [
-        predict_question(question, embedding_model, classifiers, classification_themes)
-        for question in questions
-    ]
+    if test:
+        labels_by_id = training_data.set_index("id")["fora_da_taxonomia"]
+        labels = [int(labels_by_id.loc[question["id"]]) for question in train_questions]
 
-    predictions_df = pd.DataFrame(predictions)
-    predictions_df.to_csv("data/previsoes.csv", index=False, encoding="utf-8-sig")
+        train_questions, test_questions = train_test_split(train_questions, test_size=0.05, random_state=42, stratify=labels)
 
-    #main()
+        train_ids = {str(question["id"]) for question in train_questions}
+        test_ids = {str(question["id"]) for question in test_questions}
+
+        train_labels = training_data[training_data["id"].isin(train_ids)]
+        test_labels = training_data[training_data["id"].isin(test_ids)]
+
+        complete_training_data = build_complete_training_data(train_labels, train_questions, themes)
+        classifiers = train_classifiers(complete_training_data, embedding_model, classifiers)
+
+        predictions = [predict_question(question, embedding_model, classifiers, classification_themes, theme_index) for question in test_questions]
+        predictions_df = pd.DataFrame(predictions)
+        predictions_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+
+        results = predictions_df.merge(test_labels[["id", "fora_da_taxonomia"]], on="id", how="left")
+        y_true = results["fora_da_taxonomia"].astype(int)
+        y_pred = results["decisao"].eq("fora").astype(int)
+
+    else:
+        complete_training_data = build_complete_training_data(training_data, questions, themes)
+        classifiers = train_classifiers(complete_training_data, embedding_model, classifiers)
+
+        predictions = [predict_question(question, embedding_model, classifiers, classification_themes, theme_index) for question in prod_questions]
+        predictions_df = pd.DataFrame(predictions)
+        predictions_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+
+        print(f"Arquivo salvo em {output_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", action="store_true")
+    args = parser.parse_args()
+    main(args.test)
