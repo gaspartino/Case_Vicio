@@ -117,31 +117,29 @@ def build_question_text(question):
         value = re.sub(r"<[^>]+>", " ", value)
         return re.sub(r"\s+", " ", value).strip()
 
+    statement = clean_text(question.get("enunciado_html", ""))
+    command = clean_text(question.get("comando", ""))
     alternatives = question.get("alternativas", {})
-    if isinstance(alternatives, dict):
-        alternatives_text = " ".join(f"{key}: {value}" for key, value in alternatives.items())
-    elif isinstance(alternatives, list):
-        alternatives_text = " ".join(str(value) for value in alternatives)
-    else:
-        alternatives_text = str(alternatives or "")
+    alternatives_text = " ".join(f"{key}: {clean_text(value)}" for key, value in alternatives.items()) if isinstance(alternatives, dict) else clean_text(alternatives)
 
-    parts = [question.get("enunciado_html", ""), question.get("comando", ""), alternatives_text]
-    return " ".join(clean_text(part) for part in parts if clean_text(part))
+    return f"Enunciado: {statement}\nComando: {command}\nAlternativas: {alternatives_text}"
 
 
-def train_classifiers(complete_training_data, embedding_model, classifiers):
-    data = complete_training_data.copy()
-    data["fora_da_taxonomia"] = pd.to_numeric(data["fora_da_taxonomia"], errors="raise").astype(int)
+def create_theme_index(classification_themes, embedding_model):
+    theme_texts = classification_themes.apply(lambda row: f"Tema: {row['titulo']}. Caminho: {row['caminho']}. Descrição: {row['descricao']}", axis=1).tolist()
+    embeddings = embedding_model.encode(theme_texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
+    embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
 
-    if not data["fora_da_taxonomia"].isin([0, 1]).all():
-        raise ValueError("'fora_da_taxonomia' deve conter apenas 0 ou 1.")
+    index = faiss.IndexFlatIP(embeddings.shape[1])
+    index.add(embeddings)
 
-    texts = data.apply(lambda row: build_question_text(row.to_dict()), axis=1).tolist()
-    embeddings = embedding_model.encode(texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
+    return index, embeddings
 
-    classifiers["outside_taxonomy"].fit(embeddings, data["fora_da_taxonomia"])
 
-    return classifiers
+def encode_question(question, embedding_model):
+    text = build_question_text(question)
+    query = f"Instruct: Given a legal question, retrieve the most relevant legal taxonomy theme.\nQuery: {text}"
+    return embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
 
 
 def retrieve_candidate_themes(question, embedding_model, classification_themes, index, top_k=15):
@@ -158,24 +156,29 @@ def retrieve_candidate_themes(question, embedding_model, classification_themes, 
     return candidates
 
 
-def create_theme_index(classification_themes, embedding_model):
-    theme_texts = classification_themes.apply(lambda row: f"Tema: {row['titulo']}. Caminho: {row['caminho']}. Descrição: {row['descricao']}", axis=1).tolist()
-    embeddings = embedding_model.encode(theme_texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
-    embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
 
-    index = faiss.IndexFlatIP(embeddings.shape[1])
-    index.add(embeddings)
+def train_classifiers(complete_training_data, embedding_model, classifiers):
+    data = complete_training_data.copy()
+    data["fora_da_taxonomia"] = pd.to_numeric(data["fora_da_taxonomia"], errors="raise").astype(int)
 
-    return index, embeddings
+    if not data["fora_da_taxonomia"].isin([0, 1]).all():
+        raise ValueError("'fora_da_taxonomia' deve conter apenas 0 ou 1.")
+
+    texts = data.apply(lambda row: build_question_text(row.to_dict()), axis=1).tolist()
+    queries = [f"Instruct: Given a legal question, retrieve the most relevant legal taxonomy theme.\nQuery: {text}" for text in texts]
+    embeddings = embedding_model.encode(queries, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
+
+    classifiers["outside_taxonomy"].fit(embeddings, data["fora_da_taxonomia"])
+
+    return classifiers
 
 
-def predict_question(question, embedding_model, classifiers, classification_themes, theme_embeddings, outside_threshold=0.50, theme_threshold=0.75):
-    text = build_question_text(question)
-    query = f"Instruct: Given a legal question, retrieve the most relevant legal taxonomy theme.\nQuery: {text}"
-    embedding = embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
+def predict_question(question, embedding_model, classifiers, classification_themes, index, outside_threshold=0.50, theme_threshold=0.75, top_k=15):
+    embedding = encode_question(question, embedding_model)
 
     outside_model = classifiers["outside_taxonomy"]
     outside_probabilities = outside_model.predict_proba(embedding)[0]
+
     outside_index = list(outside_model.classes_).index(1)
     outside_confidence = float(outside_probabilities[outside_index])
 
@@ -185,17 +188,17 @@ def predict_question(question, embedding_model, classifiers, classification_them
         result["decisao"] = "fora"
         return result
 
-    similarities = (embedding @ theme_embeddings.T)[0]
-    best_index = int(np.argmax(similarities))
-    best_similarity = float(similarities[best_index])
-    central_theme_id = str(classification_themes.iloc[best_index]["tema_id"])
+    candidates = retrieve_candidate_themes(question, embedding_model, classification_themes, index, top_k)
 
-    result["tema_central_id"] = central_theme_id
-    result["confianca"] = best_similarity
+    if candidates.empty:
+        return result
 
-    if best_similarity >= theme_threshold:
+    best_candidate = candidates.iloc[0]
+    similarity = float(best_candidate["similaridade"])
+    result["tema_central_id"] = str(best_candidate["tema_id"])
+    result["confianca"] = similarity
+
+    if similarity >= theme_threshold:
         result["decisao"] = "publicar"
 
     return result
-
-
