@@ -1,23 +1,23 @@
 import argparse
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
 from model import get_model
-from utils import load_questions, load_themes, load_training_data, build_complete_training_data, train_classifiers, predict_question, split_questions_by_training_data, create_theme_index
-
+from utils import load_questions, load_themes, load_training_data, split_questions_by_training_data, build_complete_training_data, create_theme_index, train_classifiers, predict_question
 
 def main(test=False):
+    output_path = "data/previsoes.csv"
     training_data = load_training_data("data/folha_verdade.csv")
     questions = load_questions("data/questoes.jsonl")
     themes, root_themes, classification_themes = load_themes("data/temas.csv")
 
     train_questions, prod_questions = split_questions_by_training_data(questions, training_data)
 
+    print(f"Questões rotuladas encontradas: {len(train_questions)}")
+    print(f"Questões para produção: {len(prod_questions)}")
+
     embedding_model = get_model("embedding")
     classifiers = get_model("classifier")
     theme_index, theme_embeddings = create_theme_index(classification_themes, embedding_model)
-
-    output_path = "publicacao.csv"
 
     if test:
         labels_by_id = training_data.set_index("id")["fora_da_taxonomia"]
@@ -50,6 +50,7 @@ def main(test=False):
         predictions_df = pd.DataFrame(predictions)
         predictions_df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
+        print(f"Previsões geradas: {len(predictions_df)}")
         print(f"Arquivo salvo em {output_path}")
 
 
