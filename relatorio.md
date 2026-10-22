@@ -88,7 +88,7 @@ O processamento é coordenado pelo arquivo `main.py`, com apoio dos métodos def
                +----------+----------+
                |                     |
                v                     v
-        Fora da Taxonomia       Dentro / Incerto
+        Fora da Taxonomia     Publicar / Revisão
                |                     |
                v                     v
           Decisão "fora"      [ Busca FAISS ]
