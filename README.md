@@ -56,14 +56,18 @@ Ao término da execução, o pipeline gera o seguinte arquivo na pasta do projet
 
 O arquivo é gerado a partir das previsões produzidas pelo pipeline. Questões classificadas como `fora` podem apresentar o campo `confianca` vazio, conforme as regras de classificação implementadas.
 
-### 5. Executar o Pipeline em Modo de Teste
+### 5. Executar o Pipeline por Modo de Operação
 
-O parâmetro `--test` permite avaliar o comportamento do classificador utilizando uma parcela das questões presentes na folha-verdade, em vez de gerar previsões para as questões destinadas à classificação em produção.
+O parâmetro `--mode` permite selecionar entre três modos de execução do pipeline: `test`, `all` e `prod`. Cada modo define quais questões serão utilizadas no treinamento e quais receberão previsões.
 
-Para executar o modo de teste:
+#### 5.1. Modo de Teste (`test`)
+
+O modo `test` permite avaliar o comportamento do classificador utilizando uma parcela das questões presentes na folha-verdade.
+
+Para executar:
 
 ```bash
-python main.py --test
+python main.py --mode test
 ```
 
 Nesse modo, o pipeline realiza as seguintes etapas:
@@ -71,15 +75,54 @@ Nesse modo, o pipeline realiza as seguintes etapas:
 1. **Separação dos dados:** divide as questões da folha-verdade em conjuntos de treinamento e teste, utilizando 95% para treinamento e 5% para teste.
 2. **Preservação da distribuição dos rótulos:** utiliza amostragem estratificada com base no campo `fora_da_taxonomia`, buscando manter a proporção entre as classes nas duas partições.
 3. **Treinamento:** constrói os dados de treinamento e ajusta o classificador utilizando apenas a partição de treinamento.
-4. **Classificação:** executa as previsões sobre as questões reservadas para teste, que não foram utilizadas no treinamento do classificador.
-5. **Exportação dos resultados:** salva as previsões em `publicacao.csv`, permitindo inspecionar as decisões, os temas atribuídos, a confiança e os motivos registrados.
+4. **Classificação:** gera previsões para as questões reservadas para teste, que não devem participar do treinamento.
+5. **Exportação dos resultados:** salva as previsões em `publicacao.csv`, permitindo inspecionar as decisões, os temas atribuídos, a confiança e as justificativas registradas.
 
-**Importante:** o modo de teste não gera um relatório de métricas de avaliação automaticamente. Embora o código importe `classification_report` e `confusion_matrix`, essas funções não são utilizadas no trecho apresentado. Para avaliar formalmente o desempenho, é necessário comparar as previsões com os rótulos reais da folha-verdade.
+**Importante:** o pipeline não gera automaticamente métricas de avaliação. Para avaliar formalmente o desempenho, é necessário comparar as previsões com os rótulos reais das questões de teste.
 
-A execução normal, sem `--test`, utiliza a folha-verdade completa para treinar o classificador e gera previsões para as questões destinadas à produção:
+#### 5.2. Modo Completo (`all`)
+
+O modo `all` gera previsões para todas as questões presentes em `data/questoes.jsonl`, sem distinguir entre questões previamente utilizadas no treinamento e questões destinadas à produção.
+
+Para executar:
+
+```bash
+python main.py --mode all
+```
+
+Nesse modo, o classificador é treinado utilizando a folha-verdade completa e as questões disponíveis no conjunto de dados, conforme a construção dos dados de treinamento implementada no pipeline. Em seguida, são geradas previsões para todas as questões.
+
+Esse modo é útil quando se deseja obter uma classificação completa do conjunto, inclusive para questões que já possuem informações na folha-verdade.
+
+**Importante:** como as questões previstas também podem ter participado do treinamento, os resultados desse modo não devem ser utilizados, isoladamente, para estimar a capacidade de generalização do classificador para questões inéditas.
+
+#### 5.3. Modo de Produção (`prod`)
+
+O modo `prod` corresponde à execução padrão do pipeline. Utiliza a folha-verdade completa para treinar o classificador e gera previsões apenas para as questões destinadas à produção, conforme a separação realizada por `split_questions_by_training_data`.
+
+Para executar explicitamente:
+
+```bash
+python main.py --mode prod
+```
+
+Como `prod` é o modo padrão, também é possível executar o pipeline sem informar o parâmetro:
 
 ```bash
 python main.py
+```
+
+Nesse modo, as questões presentes na folha-verdade são utilizadas na construção dos dados de treinamento, enquanto as questões separadas para produção são submetidas à classificação.
+
+#### 5.4. Resumo dos modos de execução
+
+| Modo | Treinamento | Questões previstas |
+|---|---|---|
+| `test` | Partição de treinamento da folha-verdade | Partição de teste (5%) |
+| `all` | Folha-verdade e questões utilizadas na construção dos dados de treinamento | Todas as questões |
+| `prod` | Folha-verdade completa | Apenas questões destinadas à produção |
+
+Os três modos exportam os resultados para `publicacao.csv`. Portanto, cada nova execução pode sobrescrever o arquivo gerado anteriormente.
 ```
 
 Nesse caso, o arquivo `publicacao.csv` contém as previsões para as questões de produção, enquanto no modo de teste contém somente as previsões das questões reservadas para avaliação.
