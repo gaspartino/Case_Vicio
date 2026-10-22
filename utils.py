@@ -142,10 +142,7 @@ def encode_question(question, embedding_model):
     return embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
 
 
-def retrieve_candidate_themes(question, embedding_model, classification_themes, index, top_k=15):
-    text = build_question_text(question)
-    query = f"Instruct: Given a legal question, retrieve the most relevant legal taxonomy theme.\nQuery: {text}"
-    embedding = embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
+def retrieve_candidate_themes(embedding, classification_themes, index, top_k=15):
     embedding = np.ascontiguousarray(embedding, dtype=np.float32)
 
     similarities, indices = index.search(embedding, min(top_k, index.ntotal))
@@ -154,7 +151,6 @@ def retrieve_candidate_themes(question, embedding_model, classification_themes, 
     candidates["similaridade"] = similarities[0]
 
     return candidates
-
 
 
 def train_classifiers(complete_training_data, embedding_model, classifiers):
@@ -173,32 +169,40 @@ def train_classifiers(complete_training_data, embedding_model, classifiers):
     return classifiers
 
 
-def predict_question(question, embedding_model, classifiers, classification_themes, index, outside_threshold=0.50, theme_threshold=0.75, top_k=15):
-    embedding = encode_question(question, embedding_model)
-
+def predict_question(question, embedding, classifiers, classification_themes, index, outside_threshold=0.50, theme_threshold=0.875, top_k=3):
     outside_model = classifiers["outside_taxonomy"]
     outside_probabilities = outside_model.predict_proba(embedding)[0]
-
     outside_index = list(outside_model.classes_).index(1)
     outside_confidence = float(outside_probabilities[outside_index])
 
-    result = {"id": question.get("id", ""), "decisao": "revisar", "tema_central_id": "", "extras_ids": "", "confianca": outside_confidence}
+    result = {"id": question.get("id", ""), "decisao": "revisar", "tema_central_id": "", "extras_ids": "", "confianca": "", "motivo": ""}
 
     if outside_confidence >= outside_threshold:
         result["decisao"] = "fora"
         return result
 
-    candidates = retrieve_candidate_themes(question, embedding_model, classification_themes, index, top_k)
+    candidates = retrieve_candidate_themes(embedding, classification_themes, index, top_k)
 
     if candidates.empty:
         return result
 
     best_candidate = candidates.iloc[0]
-    similarity = float(best_candidate["similaridade"])
     result["tema_central_id"] = str(best_candidate["tema_id"])
-    result["confianca"] = similarity
+    result["confianca"] = round(float(best_candidate["similaridade"]), 3)
 
-    if similarity >= theme_threshold:
-        result["decisao"] = "publicar"
+    if result["confianca"] > 0.80 and len(candidates) > 1:
+        second_candidate = candidates.iloc[1]
+        result["motivo"] = f"Dúvida entre os temas {result['tema_central_id']} e {second_candidate['tema_id']}."
+
+    approved_candidates = candidates[candidates["similaridade"] >= theme_threshold]
+
+    if approved_candidates.empty:
+        return result
+
+    result["decisao"] = "publicar"
+    result["motivo"] = ""
+
+    extra_candidates = approved_candidates[approved_candidates["tema_id"].astype(str) != result["tema_central_id"]]
+    result["extras_ids"] = ",".join(extra_candidates["tema_id"].astype(str).tolist())
 
     return result

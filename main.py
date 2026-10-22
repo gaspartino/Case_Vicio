@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from model import get_model
-from utils import load_questions, load_themes, load_training_data, build_complete_training_data, train_classifiers, predict_question, split_questions_by_training_data, create_theme_index
+from utils import load_questions, load_themes, load_training_data, build_complete_training_data, train_classifiers, predict_question, split_questions_by_training_data, create_theme_index, encode_question
 
 
 def main(test=False):
@@ -34,7 +34,10 @@ def main(test=False):
         complete_training_data = build_complete_training_data(train_labels, train_questions, themes)
         classifiers = train_classifiers(complete_training_data, embedding_model, classifiers)
 
-        predictions = [predict_question(question, embedding_model, classifiers, classification_themes, theme_index) for question in test_questions]
+        predictions = [
+            predict_question(question, encode_question(question, embedding_model), classifiers, classification_themes, theme_index)
+            for question in test_questions
+        ]
         predictions_df = pd.DataFrame(predictions)
         predictions_df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
@@ -45,7 +48,11 @@ def main(test=False):
         complete_training_data = build_complete_training_data(training_data, questions, themes)
         classifiers = train_classifiers(complete_training_data, embedding_model, classifiers)
 
-        predictions = [predict_question(question, embedding_model, classifiers, classification_themes, theme_index) for question in prod_questions]
+        predictions = [
+            predict_question(question, encode_question(question, embedding_model), classifiers, classification_themes, theme_index)
+            for question in prod_questions
+        ]
+
         predictions_df = pd.DataFrame(predictions)
         predictions_df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
