@@ -2,13 +2,19 @@
 AUTOAVALIAÇÃO DE PRECISÃO E COBERTURA
 ==================================================
 
-1. COBERTURA (Fração Publicada):
-   - Estimativa / Intervalo: [0.95, 0.98] (ou 95% a 98%)
-   - Valor Calculado: 0.9638 (96.38%)
-   - Explicação: Do total de 359 questões analisadas no conjunto de dados, 13 não foram marcadas para publicação e 346 foram efetivamente publicadas (346 / 359 = 0.9638).
+1. PRECISÃO NAS QUESTÕES PUBLICADAS
+- Estimativa pontual: aproximadamente 90%.
+- Intervalo previsto: [83%, 93%].
+- Explicação: Estima-se que aproximadamente 88% das questões selecionadas para publicação recebam uma classificação temática adequada, considerando a proximidade semântica entre o tema atribuído e o tema verdadeiro. Essa avaliação considera que temas próximos ou relacionados na hierarquia temática podem representar classificações plausíveis, mesmo quando os identificadores não coincidem exatamente. A estimativa também deve considerar a dificuldade de selecionar o tema correto entre 377 temas possíveis, o que amplia o espaço de decisão do classificador e torna mais difícil distinguir temas semanticamente semelhantes. O intervalo apresentado é uma previsão de incerteza, não um intervalo estatístico calculado a partir de uma amostra validada.
 
-2. PRECISÃO (Nas Publicadas):
-   - Estimativa / Intervalo: [0.70, 0.78] (ou 70% a 78%)
-   - Ponto Central Estimado: ~74%
-   - Explicação: A precisão foi estimada a partir de uma amostragem/auditoria de 46 questões publicadas, avaliando a acurácia dos rótulos de temas atribuídos. Na amostra, 34 das 46 classificações estavam corretas (taxa observada de 73,91%). O intervalo de 70% a 78% acomoda a margem de erro amostral e as flutuações de acerto observadas entre diferentes blocos de questões (que variaram de 66,7% a 80,0%).
+2. COBERTURA DAS QUESTÕES FORA DA FOLHA-VERDADE
+
+- Estimativa pontual: aproximadamente 85%.
+- Intervalo previsto: [80%, 90%].
+- Explicação Estima-se que aproximadamente 85% das questões fora da folha-verdade sejam selecionadas para publicação. Essa previsão considera o comportamento observado durante a avaliação do sistema e a proporção de questões que o pipeline encaminha para publicação, em vez de revisão ou exclusão. A cobertura representa a fração de questões publicadas em relação ao total de questões avaliadas fora da folha-verdade, independentemente de a classificação temática estar correta.
+
+A estimativa deve ser interpretada considerando as limitações dos dados de treinamento. A folha-verdade contém apenas 100 exemplos, dos quais 92 possuem um tema associado e 8 são classificados como fora da taxonomia. Essa quantidade reduzida de exemplos dificulta o treinamento de um classificador capaz de identificar questões sem correspondência temática adequada. Além disso, o sistema precisa distinguir entre 377 temas possíveis, muitos dos quais podem apresentar similaridade semântica com o conteúdo das questões. Essas limitações aumentam a dificuldade de classificação e podem afetar a decisão de publicar, revisar ou descartar uma questão.
+
+O intervalo de 80% a 90% representa uma faixa de previsão em torno da estimativa de 85%, e não um intervalo estatístico calculado a partir de uma amostra validada.
+
 ==================================================
