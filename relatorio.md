@@ -2,7 +2,7 @@
 
 **Projeto:** Case Vício
 
-**Repositório:** [github.com/gaspartino/Case_Vicio](https://github.com/gaspartino/Case_Vicio)
+**Repositório:** [github.com/gaspartino/Case_Vicio/tree/desafio-b](https://github.com/gaspartino/Case_Vicio/tree/desafio-b)
 
 ---
 
